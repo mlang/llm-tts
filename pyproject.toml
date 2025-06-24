@@ -1,0 +1,14 @@
+[project]
+name = "llm-tts"
+version = "0.1"
+description = "A LLM plugin for OpenAI TTS"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{ name = "Mario Lang", email = "mlang@blind.guru" }]
+dependencies = [ "llm>=0.26", "openai" ]
+
+[project.entry-points.llm]
+llm_tts = "llm_tts"
+
+[project.optional-dependencies]
+gstreamer = ["PyGObject"]
