@@ -7,7 +7,7 @@ from sys import platform, stdin
 from types import TracebackType
 from typing import cast, ContextManager, IO, Iterator, Literal, Optional, Protocol, Type, ClassVar
 
-from click import argument, command, echo, option, Choice, ParamType, UsageError
+from click import argument, command, echo, option, ParamType, UsageError
 from dataclasses import dataclass
 from elevenlabs.client import ElevenLabs
 from subprocess import Popen, PIPE
@@ -286,7 +286,7 @@ def ffmpeg_pipeline(
         *ffmpeg_args, "-i", "pipe:0",
         "-f", out_fmt, device
     ]
-    proc = Popen(cmd, stdin=PIPE)
+    proc = Popen(cmd, stdin=PIPE, bufsize=0)
 
     try:
         yield proc.stdin
@@ -377,7 +377,8 @@ class OpenAITextToSpeechModel(TextToSpeechModel):
     ):
         if response_format:
             ResponseFormat = Literal['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm']
-            assert(response_format in self.audio_formats)
+            if response_format not in self.audio_formats:
+                raise RuntimeError(f"Unsupported format {response_format}")
 
         return self.client.audio.speech.with_streaming_response.create(
             model=self.model_name, input=text, voice=voice or self.default_voice,
@@ -513,7 +514,8 @@ if has_pipeline:
             - response_format must be "wav" (our only entry).
             """
             fmt = response_format or self.preferred_audio_format
-            assert fmt in self.audio_formats, f"Unsupported format {fmt}"
+            if fmt not in self.audio_formats:
+                raise RuntimeError(f"Unsupported format {fmt}")
 
             # run the TTS pipeline → {"array": np.ndarray, "sampling_rate": int}
             speech = self.pipeline(text)
