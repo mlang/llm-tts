@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from io import BytesIO
 import json
 from sys import platform, stdin
 from types import TracebackType
@@ -298,8 +299,6 @@ def ffmpeg_pipeline(
             proc.kill()
 
 
-
-
 def audio_sinks():
     import gi
     gi.require_version('Gst', '1.0')
@@ -329,7 +328,7 @@ class TextToSpeechModel(ABC):
     key_envvar: ClassVar[Optional[str]] = None
     audio_formats: ClassVar[dict[str, AudioFormat]]
     preferred_audio_format: ClassVar[str]
-    default_voice: ClassVar[str]
+    default_voice: ClassVar[Optional[str]] = None
 
     @classmethod
     def get_key(cls):
@@ -473,6 +472,90 @@ register_tts_model('tts-1', OpenAITextToSpeechModel('tts-1'))
 register_tts_model('tts-1-hd', OpenAITextToSpeechModel('tts-1-hd'))
 register_tts_model('gpt-4o-mini-tts', OpenAITextToSpeechModel('gpt-4o-mini-tts'))
 register_tts_model('eleven_multilingual_v2', ElevenLabsTextToSpeechModel('eleven_multilingual_v2'))
+
+try:
+    from transformers import pipeline
+    import wave
+    import numpy as np
+
+except ModuleNotFoundError:
+    pipeline = None
+
+if pipeline:
+    class TransformersTextToSpeechModel(TextToSpeechModel):
+        """
+        A local TTS model via 🤗 transformers pipeline("text-to-speech").
+        Renders to WAV in RAM, then streams in chunks.
+        """
+        # we don’t need API keys
+        # we only support WAV here – you could add MP3/etc by re-encoding
+        audio_formats = { "wav": AudioFormat.wav() }
+        preferred_audio_format = "wav"
+
+        def __init__(self, model_name: str):
+            # instantiate the HF TTS pipeline
+            # e.g. "espnet/kan-bayashi_ljspeech_tts_train_tacotron2_raw_phn_tacotron_g2"
+            self.pipeline = pipeline("text-to-speech", model=model_name)
+
+        def synthesize(
+            self,
+            text: str,
+            *,
+            voice: Optional[str] = None,
+            instructions: Optional[str] = None,
+            response_format: Optional[str] = None
+        ) -> ContextManager[StreamingAudio]:
+            """
+            - voice/instructions are ignored here.
+            - response_format must be "wav" (our only entry).
+            """
+            fmt = response_format or self.preferred_audio_format
+            assert fmt in self.audio_formats, f"Unsupported format {fmt}"
+
+            # run the TTS pipeline → {"array": np.ndarray, "sampling_rate": int}
+            speech = self.pipeline(text)
+            s16: np.ndarray = (speech["audio"] * 32767).astype(np.int16)
+
+            # write to a WAV in RAM
+            buf = BytesIO()
+            with wave.open(buf, 'wb') as wav:
+                wav.setnchannels(s16.shape[0])
+                wav.setsampwidth(2)  # 2 bytes for 16-bit audio
+                wav.setframerate(speech["sampling_rate"])
+                wav.writeframes(s16.tobytes())
+
+            raw_bytes = buf.getvalue()
+
+            return _InMemoryAudio(raw_bytes)
+
+    register_tts_model('transformers/suno/bark', TransformersTextToSpeechModel('suno/bark'))
+    register_tts_model('transformers/suno/bark-small', TransformersTextToSpeechModel('suno/bark-small'))
+
+
+class _InMemoryAudio:
+    def __init__(self, data: bytes):
+        self._data = data
+
+    def __enter__(self) -> "_InMemoryAudio":
+        return self
+
+    def __exit__(
+        self,
+        exc_type:  Optional[Type[BaseException]],
+        exc_val:   Optional[BaseException],
+        exc_tb:    Optional[TracebackType]
+    ) -> Optional[bool]:
+        return None
+
+    def iter_bytes(self, chunk_size: int = 1024) -> Iterator[bytes]:
+        # yield consecutive slices of the byte blob
+        for i in range(0, len(self._data), chunk_size):
+            yield self._data[i : i + chunk_size]
+
+    def stream_to_file(self, filename: str):
+        with open(filename, "wb") as f:
+            f.write(self._data)
+
 
 CHUNK_SIZE = 4096
 DEFAULT_TTS_MODEL = 'gpt-4o-mini-tts'
