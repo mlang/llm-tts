@@ -482,7 +482,7 @@ try:
     has_pipeline = True
 
 except ModuleNotFoundError:
-    has_pipeline = True
+    has_pipeline = False
 
 if has_pipeline:
     class TransformersTextToSpeechModel(TextToSpeechModel):
