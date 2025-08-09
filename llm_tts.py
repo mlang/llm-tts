@@ -487,8 +487,6 @@ if pipeline:
         A local TTS model via 🤗 transformers pipeline("text-to-speech").
         Renders to WAV in RAM, then streams in chunks.
         """
-        # we don’t need API keys
-        # we only support WAV here – you could add MP3/etc by re-encoding
         audio_formats = { "wav": AudioFormat.wav() }
         preferred_audio_format = "wav"
 
@@ -530,6 +528,7 @@ if pipeline:
 
     register_tts_model('transformers/suno/bark', TransformersTextToSpeechModel('suno/bark'))
     register_tts_model('transformers/suno/bark-small', TransformersTextToSpeechModel('suno/bark-small'))
+    register_tts_model('transformers/facebook/mms-tts-eng', TransformersTextToSpeechModel('facebook/mms-tts-eng'))
 
 
 class _InMemoryAudio:
