@@ -479,10 +479,12 @@ try:
     import wave
     import numpy as np
 
-except ModuleNotFoundError:
-    pipeline = None
+    has_pipeline = True
 
-if pipeline:
+except ModuleNotFoundError:
+    has_pipeline = True
+
+if has_pipeline:
     class TransformersTextToSpeechModel(TextToSpeechModel):
         """
         A local TTS model via 🤗 transformers pipeline("text-to-speech").
