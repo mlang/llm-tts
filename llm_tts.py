@@ -1,16 +1,16 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from functools import cached_property
+from dataclasses import dataclass
+from functools import cached_property, partial
+import importlib.util
 from io import BytesIO
 import json
+from subprocess import Popen, PIPE
 from sys import platform, stdin
 from types import TracebackType
-from typing import cast, ContextManager, IO, Iterator, Literal, Optional, Protocol, Type, ClassVar
+from typing import cast, Callable, ContextManager, IO, Iterator, Literal, Optional, Protocol, Type, ClassVar
 
 from click import argument, command, echo, option, ParamType, UsageError
-from dataclasses import dataclass
-from elevenlabs.client import ElevenLabs
-from subprocess import Popen, PIPE
 from llm import get_key, hookimpl
 from openai import OpenAI, NOT_GIVEN
 
@@ -366,7 +366,6 @@ class OpenAITextToSpeechModel(TextToSpeechModel):
         self.model_name = model_name
         self.client = OpenAI(api_key=self.get_key())
 
-
     def synthesize(
         self,
         text: str,
@@ -407,7 +406,11 @@ class ElevenLabsTextToSpeechModel(TextToSpeechModel):
 
     def __init__(self, model_name: str):
         self.model_name = model_name
-        self.client = ElevenLabs(api_key=self.get_key())
+
+    @cached_property
+    def client(self):
+        from elevenlabs.client import ElevenLabs
+        return ElevenLabs(api_key=self.get_key())
 
     def synthesize(
         self,
@@ -459,33 +462,28 @@ class ElevenLabsAudioStream:
                 file.write(chunk)
 
 
-_models: dict[str, TextToSpeechModel] = {}
+_models: dict[str, TextToSpeechModel | Callable[[], TextToSpeechModel]] = {}
 
-def register_tts_model(name, model):
-    _models[name] = model
+def register_tts_model(name: str, factory: TextToSpeechModel | Callable[[], TextToSpeechModel]):
+    _models[name] = factory
 
-def get_tts_model(name):
-    if name in _models:
-        return _models[name]
-    raise RuntimeError(f"No TTS Model named {name}")
+def get_tts_model(name: str) -> TextToSpeechModel:
+    if name not in _models:
+        raise RuntimeError(f"No TTS Model named {name}")
+    model_or_factory = _models[name]
+    if callable(model_or_factory):
+        model_or_factory = _models[name] = model_or_factory()
+    return model_or_factory
 
 
-register_tts_model('tts-1', OpenAITextToSpeechModel('tts-1'))
-register_tts_model('tts-1-hd', OpenAITextToSpeechModel('tts-1-hd'))
-register_tts_model('gpt-4o-mini-tts', OpenAITextToSpeechModel('gpt-4o-mini-tts'))
-register_tts_model('eleven_multilingual_v2', ElevenLabsTextToSpeechModel('eleven_multilingual_v2'))
+register_tts_model('tts-1', partial(OpenAITextToSpeechModel, 'tts-1'))
+register_tts_model('tts-1-hd', partial(OpenAITextToSpeechModel, 'tts-1-hd'))
+register_tts_model('gpt-4o-mini-tts', partial(OpenAITextToSpeechModel, 'gpt-4o-mini-tts'))
+register_tts_model('eleven_multilingual_v2', partial(ElevenLabsTextToSpeechModel, 'eleven_multilingual_v2'))
 
-try:
-    from transformers import pipeline
-    import wave
-    import numpy as np
+_has_transformers = importlib.util.find_spec("transformers") is not None
 
-    has_pipeline = True
-
-except ModuleNotFoundError:
-    has_pipeline = False
-
-if has_pipeline:
+if _has_transformers:
     class TransformersTextToSpeechModel(TextToSpeechModel):
         """
         A local TTS model via 🤗 transformers pipeline("text-to-speech").
@@ -498,8 +496,9 @@ if has_pipeline:
             self.model_name = model_name
 
         @cached_property
-        def pipeline(self):
-            return pipeline("text-to-speech", model=self.model_name)
+        def _pipeline(self):
+            from transformers import pipeline as _hf_pipeline
+            return _hf_pipeline("text-to-speech", model=self.model_name)
 
         def synthesize(
             self,
@@ -513,12 +512,14 @@ if has_pipeline:
             - voice/instructions are ignored here.
             - response_format must be "wav" (our only entry).
             """
+            import wave
+            import numpy as np
             fmt = response_format or self.preferred_audio_format
             if fmt not in self.audio_formats:
                 raise RuntimeError(f"Unsupported format {fmt}")
 
             # run the TTS pipeline → {"array": np.ndarray, "sampling_rate": int}
-            speech = self.pipeline(text)
+            speech = self._pipeline(text)
             s16: np.ndarray = (speech["audio"] * 32767).astype(np.int16)
 
             # write to a WAV in RAM
@@ -533,9 +534,9 @@ if has_pipeline:
 
             return _InMemoryAudio(raw_bytes)
 
-    register_tts_model('facebook/mms-tts-eng', TransformersTextToSpeechModel('facebook/mms-tts-eng'))
-    register_tts_model('suno/bark', TransformersTextToSpeechModel('suno/bark'))
-    register_tts_model('suno/bark-small', TransformersTextToSpeechModel('suno/bark-small'))
+    register_tts_model('facebook/mms-tts-eng', partial(TransformersTextToSpeechModel, 'facebook/mms-tts-eng'))
+    register_tts_model('suno/bark', partial(TransformersTextToSpeechModel, 'suno/bark'))
+    register_tts_model('suno/bark-small', partial(TransformersTextToSpeechModel, 'suno/bark-small'))
 
 
 class _InMemoryAudio:
