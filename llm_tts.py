@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
+from functools import cached_property
 from io import BytesIO
 import json
 from sys import platform, stdin
@@ -491,9 +492,11 @@ if pipeline:
         preferred_audio_format = "wav"
 
         def __init__(self, model_name: str):
-            # instantiate the HF TTS pipeline
-            # e.g. "espnet/kan-bayashi_ljspeech_tts_train_tacotron2_raw_phn_tacotron_g2"
-            self.pipeline = pipeline("text-to-speech", model=model_name)
+            self.model_name = model_name
+
+        @cached_property
+        def pipeline(self):
+            return pipeline("text-to-speech", model=self.model_name)
 
         def synthesize(
             self,
@@ -526,9 +529,9 @@ if pipeline:
 
             return _InMemoryAudio(raw_bytes)
 
-    register_tts_model('transformers/suno/bark', TransformersTextToSpeechModel('suno/bark'))
-    register_tts_model('transformers/suno/bark-small', TransformersTextToSpeechModel('suno/bark-small'))
-    register_tts_model('transformers/facebook/mms-tts-eng', TransformersTextToSpeechModel('facebook/mms-tts-eng'))
+    register_tts_model('facebook/mms-tts-eng', TransformersTextToSpeechModel('facebook/mms-tts-eng'))
+    register_tts_model('suno/bark', TransformersTextToSpeechModel('suno/bark'))
+    register_tts_model('suno/bark-small', TransformersTextToSpeechModel('suno/bark-small'))
 
 
 class _InMemoryAudio:
