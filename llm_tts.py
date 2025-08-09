@@ -476,4 +476,3 @@ register_tts_model('eleven_multilingual_v2', ElevenLabsTextToSpeechModel('eleven
 
 CHUNK_SIZE = 4096
 DEFAULT_TTS_MODEL = 'gpt-4o-mini-tts'
-DEFAULT_TTS_VOICE = 'nova'
