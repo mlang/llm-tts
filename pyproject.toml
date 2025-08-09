@@ -4,11 +4,18 @@ version = "0.1"
 description = "A LLM plugin for OpenAI TTS"
 readme = "README.md"
 license = "Apache-2.0"
-authors = [{ name = "Mario Lang", email = "mlang@blind.guru" }]
-dependencies = [ "llm>=0.26", "openai" ]
+dependencies = [ "llm", "openai", "elevenlabs" ]
 
-[project.entry-points.llm]
-llm_tts = "llm_tts"
+[[project.authors]]
+name = "Mario Lang"
+email = "mlang@blind.guru"
 
 [project.optional-dependencies]
 gstreamer = ["PyGObject"]
+
+[project.urls]
+Homepage = "https://github.com/mlang/llm-tts"
+Issues = "https://github.com/mlang/llm-tts/issues"
+
+[project.entry-points.llm]
+llm_tts = "llm_tts"

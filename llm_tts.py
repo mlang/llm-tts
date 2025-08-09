@@ -1,13 +1,16 @@
+from abc import ABC, abstractmethod
 from contextlib import contextmanager
 import json
 from sys import platform, stdin
-from typing import cast, Literal, Optional
+from types import TracebackType
+from typing import cast, ContextManager, IO, Iterator, Literal, Optional, Protocol, Type, ClassVar
 
 from click import argument, command, echo, option, Choice, ParamType, UsageError
 from dataclasses import dataclass
+from elevenlabs.client import ElevenLabs
 from subprocess import Popen, PIPE
 from llm import get_key, hookimpl
-from openai import OpenAI
+from openai import OpenAI, NOT_GIVEN
 
 
 @hookimpl
@@ -25,34 +28,49 @@ class AudioFormat:
     gst_caps: str
     ffmpeg_args: list[str]
 
+    # Dispatcher returning the correct playback context-manager
+    def play(self, cfg: "PlayerCfg") -> ContextManager[IO[bytes]]:
+        if isinstance(cfg, GStreamer):
+            return gstreamer_pipeline(self.gst_caps, sink=cfg.sink)
+        else:
+            return ffmpeg_pipeline(
+                self.ffmpeg_args, out_fmt=cfg.out_fmt, device=cfg.device
+            )
 
-AUDIO_FORMATS: dict[str, AudioFormat] = {
-    "mp3": AudioFormat(
-        gst_caps="audio/mpeg, mpegversion=1",
-        ffmpeg_args=["-f", "mp3"],
-    ),
-    "opus": AudioFormat(
-        gst_caps="audio/x-opus",
-        ffmpeg_args=["-f", "opus"],
-    ),
-    "aac": AudioFormat(
-        gst_caps="audio/mpeg, mpegversion=4",
-        ffmpeg_args=["-f", "aac"],
-    ),
-    "flac": AudioFormat(
-        gst_caps="audio/x-flac",
-        ffmpeg_args=["-f", "flac"],
-    ),
-    "wav": AudioFormat(
-        gst_caps="audio/x-wav",
-        ffmpeg_args=["-f", "wav"],
-    ),
-    # Raw 24 kHz, 16-bit, mono PCM
-    "pcm": AudioFormat(
-        gst_caps="audio/x-raw, format=S16LE, channels=1, rate=24000, layout=interleaved",
-        ffmpeg_args=["-f", "s16le", "-ar", "24000", "-ac", "1"],
-    )
-}
+    @classmethod
+    def mp3(cls) -> "AudioFormat":
+        return cls("audio/mpeg, mpegversion=1", ["-f", "mp3"])
+
+    @classmethod
+    def opus(cls) -> "AudioFormat":
+        return cls("audio/x-opus", ["-f", "opus"])
+
+    @classmethod
+    def aac(cls) -> "AudioFormat":
+        return cls("audio/mpeg, mpegversion=4", ["-f", "aac"])
+
+    @classmethod
+    def flac(cls) -> "AudioFormat":
+        return cls("audio/x-flac", ["-f", "flac"])
+
+    @classmethod
+    def wav(cls) -> "AudioFormat":
+        return cls("audio/x-wav", ["-f", "wav"])
+
+    @classmethod
+    def pcm(cls, sr: int) -> "AudioFormat":
+        return cls(
+            f"audio/x-raw, format=S16LE, channels=1, rate={sr}, layout=interleaved",
+            ["-f", "s16le", "-ar", str(sr), "-ac", "1"],
+        )
+
+    @classmethod
+    def alaw(cls) -> "AudioFormat":
+        return cls("audio/x-alaw, rate=8000, channels=1", ["-f", "alaw", "-ar", "8000", "-ac", "1"])
+
+    @classmethod
+    def ulaw(cls) -> "AudioFormat":
+        return cls("audio/x-mulaw, rate=8000, channels=1", ["-f", "mulaw", "-ar", "8000", "-ac", "1"])
 
 
 @dataclass
@@ -103,10 +121,7 @@ class PlayerSpec(ParamType):
 @option('-m', '--model', show_default=True, metavar="NAME")
 @option('-v', '--voice', metavar="NAME")
 @option('-i', '--instructions')
-@option('-f', '--format', 'fmt',
-    type=Choice(AUDIO_FORMATS.keys()), show_choices=True,
-    default='aac', show_default=True
-)
+@option('-f', '--format', 'fmt')
 @option('json_mode', '--json', is_flag=True,
     help="Read the initial TTS request from stdin"
 )
@@ -124,9 +139,9 @@ class PlayerSpec(ParamType):
 def tts_cmd(
     text: Optional[str],
     model: str,
-    voice: str,
+    voice: Optional[str],
     instructions: Optional[str],
-    fmt: str,
+    fmt: Optional[str],
     json_mode: bool,
     api_key: Optional[str],
     output_file: Optional[str],
@@ -148,30 +163,39 @@ def tts_cmd(
     if play is None and output_file is None:
         play = default_player()
 
-    openai = OpenAI(api_key=get_key(api_key, 'openai', 'OPENAI_API_KEY'))
+    backend = cast(PlayerCfg, play)
+
+    tts_model = get_tts_model(model)
+
+    if fmt is None:
+        fmt = tts_model.preferred_audio_format
+
+    if fmt not in tts_model.audio_formats:
+        raise UsageError(f"Audio format {fmt} not supported by {model}.  Supported formats are: {', '.join(tts_model.audio_formats.keys())}")
 
     tts_request = json.loads(stdin.read()) if json_mode else {}
     if not text and not json_mode:
         text = stdin.read()
 
     if text:
-        tts_request['input'] = text
-    if model or 'model' not in tts_request:
-        tts_request['model'] = model or DEFAULT_TTS_MODEL
+        tts_request['text'] = text
+    if 'model' in tts_request:
+        model = tts_request['model']
+        del tts_request['model']
+    if model is None:
+        model = DEFAULT_TTS_MODEL
     if voice or 'voice' not in tts_request:
-        tts_request['voice'] = voice or DEFAULT_TTS_VOICE
+        tts_request['voice'] = voice or tts_model.default_voice
     if instructions:
         tts_request['instructions'] = instructions
     tts_request['response_format'] = fmt
 
-    with openai.audio.speech.with_streaming_response.create(
-        **tts_request
-    ) as response:
+    with tts_model.synthesize(**tts_request) as audio:
         if output_file:
-            response.stream_to_file(output_file)
+            audio.stream_to_file(output_file)
         else:
-            with player(cast(PlayerCfg, play), fmt) as pipe:
-                for chunk in response.iter_bytes(CHUNK_SIZE):
+            with tts_model.audio_formats[fmt].play(backend) as pipe:
+                for chunk in audio.iter_bytes(CHUNK_SIZE):
                     pipe.write(chunk)
 
 
@@ -188,15 +212,15 @@ def tts(
 ):
     """Convert the given text to speech and play it back for the user.  Instructions lets you change the way the text is spoken."""
 
-    openai = OpenAI(api_key=get_key(None, 'openai', 'OPENAI_API_KEY'))
-    response_format: Literal['aac'] = 'aac'
+    tts_model = get_tts_model(DEFAULT_TTS_MODEL)
+    response_format = tts_model.preferred_audio_format
 
-    with openai.audio.speech.with_streaming_response.create(
-        model="gpt-4o-mini-tts", voice=voice, input=text,
-        response_format=response_format,
-        **({"instructions": instructions} if instructions else {})
+    with tts_model.synthesize(
+        text=text, voice=voice, instructions=instructions,
+        response_format=response_format
     ) as response:
-        with player(default_player(), response_format) as pipe:
+        fmt_spec = tts_model.audio_formats[response_format]
+        with tts_model.audio_formats[response_format].play(default_player()) as pipe:
             for chunk in response.iter_bytes(CHUNK_SIZE):
                 pipe.write(chunk)
 
@@ -205,7 +229,7 @@ def tts(
 
 @contextmanager
 def gstreamer_pipeline(
-    fmt: str, sink: str = "alsasink"
+    gst_caps: str, *, sink: str = "alsasink"
 ):
     import gi # type: ignore
     gi.require_version('Gst', '1.0')
@@ -226,7 +250,7 @@ def gstreamer_pipeline(
     appsrc = pipeline.get_by_name('audio_source')
     appsrc.set_property(
         'caps',
-        Gst.Caps.from_string(AUDIO_FORMATS[fmt].gst_caps)
+        Gst.Caps.from_string(gst_caps)
     )
     appsrc.set_property('block', True)
     appsrc.set_property('max-bytes', 2097152)
@@ -250,14 +274,14 @@ def gstreamer_pipeline(
 
 @contextmanager
 def ffmpeg_pipeline(
-    fmt: str = "aac",
+    ffmpeg_args: list[str],
     *,
     out_fmt: str,
     device: str
 ):
     cmd = [
         "ffmpeg", "-loglevel", "quiet",
-        *AUDIO_FORMATS[fmt].ffmpeg_args, "-i", "pipe:0",
+        *ffmpeg_args, "-i", "pipe:0",
         "-f", out_fmt, device
     ]
     proc = Popen(cmd, stdin=PIPE)
@@ -274,14 +298,6 @@ def ffmpeg_pipeline(
             proc.kill()
 
 
-# Dispatcher returning the correct playback context-manager
-def player(cfg: PlayerCfg, input_fmt: str):
-    if isinstance(cfg, GStreamer):
-        return gstreamer_pipeline(fmt=input_fmt, sink=cfg.sink)
-    else:
-        return ffmpeg_pipeline(
-            fmt=input_fmt, out_fmt=cfg.out_fmt, device=cfg.device
-        )
 
 
 def audio_sinks():
@@ -299,6 +315,164 @@ def audio_sinks():
         if {"Audio", "Sink"}.issubset(factory.get_metadata('klass').split("/"))
     )
 
+
+class StreamingAudio(Protocol):
+    def stream_to_file(self, filename: str):
+        ...
+
+    def iter_bytes(self, chunk_size: int = 4096) -> Iterator[bytes]:
+        ...
+
+
+class TextToSpeechModel(ABC):
+    key_name: ClassVar[Optional[str]] = None
+    key_envvar: ClassVar[Optional[str]] = None
+    audio_formats: ClassVar[dict[str, AudioFormat]]
+    preferred_audio_format: ClassVar[str]
+    default_voice: ClassVar[str]
+
+    @classmethod
+    def get_key(cls):
+        return get_key(None, cls.key_name, cls.key_envvar)
+
+    @abstractmethod
+    def synthesize(
+        self,
+        text: str,
+        *,
+        voice: Optional[str] = None,
+        instructions: Optional[str] = None,
+        response_format: Optional[str] = None
+    ) -> ContextManager[StreamingAudio]:
+        pass
+
+
+class OpenAITextToSpeechModel(TextToSpeechModel):
+    key_name = "openai"
+    key_envvar = "OPENAI_API_KEY"
+
+    audio_formats = {
+        "mp3": AudioFormat.mp3(),
+        "opus": AudioFormat.opus(),
+        "aac": AudioFormat.aac(),
+        "flac": AudioFormat.flac(),
+        "wav": AudioFormat.wav(),
+        "pcm": AudioFormat.pcm(24000),
+    }
+    preferred_audio_format = 'aac'
+    default_voice = 'nova'
+
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self.client = OpenAI(api_key=self.get_key())
+
+
+    def synthesize(
+        self,
+        text: str,
+        *,
+        voice: Optional[str] = None,
+        instructions: Optional[str] = None,
+        response_format: Optional[str] = None
+    ):
+        if response_format:
+            ResponseFormat = Literal['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm']
+            assert(response_format in self.audio_formats)
+
+        return self.client.audio.speech.with_streaming_response.create(
+            model=self.model_name, input=text, voice=voice or self.default_voice,
+            instructions=instructions or NOT_GIVEN,
+            response_format=cast(ResponseFormat, response_format) or NOT_GIVEN
+        )
+
+class ElevenLabsTextToSpeechModel(TextToSpeechModel):
+    key_name = "elevenlabs"
+    key_envvar = "ELEVENLABS_API_KEY"
+
+    audio_formats = {
+        **{name: AudioFormat.mp3() for name in (
+            'mp3_22050_32', 'mp3_44100_32', 'mp3_44100_64',
+            'mp3_44100_96', 'mp3_44100_128', 'mp3_44100_192')},
+        **{name: AudioFormat.opus() for name in (
+            'opus_48000_32', 'opus_48000_64', 'opus_48000_96',
+            'opus_48000_128', 'opus_48000_192')},
+        **{f"pcm_{rate}": AudioFormat.pcm(rate) for rate in (
+            8000, 16000, 22050, 24000, 44100, 48000)},
+        "ulaw_8000": AudioFormat.ulaw(),
+        "alaw_8000": AudioFormat.alaw()
+    }
+    preferred_audio_format = 'mp3_44100_96'
+    default_voice = 'JBFqnCBsd6RMkjVDRZzb'
+
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self.client = ElevenLabs(api_key=self.get_key())
+
+    def synthesize(
+        self,
+        text: str,
+        *,
+        voice: Optional[str] = None,
+        instructions: Optional[str] = None,
+        response_format: Optional[str] = None
+    ) -> ContextManager[StreamingAudio]:
+        if instructions:
+            raise RuntimeError("ElevenLabs does not support instructions")
+
+        return ElevenLabsAudioStream(
+            self.client.text_to_speech.stream(
+                model_id=self.model_name, text=text, voice_id=voice or self.default_voice,
+                output_format=response_format
+            )
+        )
+
+class ElevenLabsAudioStream:
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __enter__(self):
+        return self
+
+    def __exit__(
+        self,
+        exc_type:  Optional[Type[BaseException]],
+        exc_val:   Optional[BaseException],
+        exc_tb:    Optional[TracebackType]
+    ) -> Optional[bool]:
+        self.inner.close()
+        return None
+
+    def iter_bytes(self, chunk_size: int = 1024) -> Iterator[bytes]:
+        buffer = bytearray()
+        for chunk in self.inner:
+            buffer.extend(chunk)
+            while len(buffer) >= chunk_size:
+                yield bytes(buffer[:chunk_size])
+                buffer = buffer[chunk_size:]
+        if buffer:
+            yield bytes(buffer)
+
+    def stream_to_file(self, filename: str):
+        with open(filename, "wb") as file:
+            for chunk in self.inner:
+                file.write(chunk)
+
+
+_models: dict[str, TextToSpeechModel] = {}
+
+def register_tts_model(name, model):
+    _models[name] = model
+
+def get_tts_model(name):
+    if name in _models:
+        return _models[name]
+    raise RuntimeError(f"No TTS Model named {name}")
+
+
+register_tts_model('tts-1', OpenAITextToSpeechModel('tts-1'))
+register_tts_model('tts-1-hd', OpenAITextToSpeechModel('tts-1-hd'))
+register_tts_model('gpt-4o-mini-tts', OpenAITextToSpeechModel('gpt-4o-mini-tts'))
+register_tts_model('eleven_multilingual_v2', ElevenLabsTextToSpeechModel('eleven_multilingual_v2'))
 
 CHUNK_SIZE = 4096
 DEFAULT_TTS_MODEL = 'gpt-4o-mini-tts'
