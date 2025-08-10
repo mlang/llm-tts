@@ -552,7 +552,7 @@ except ModuleNotFoundError:
     _has_piper = False
 
 if _has_piper:
-    _PIPER_CACHE = Path.home() / ".cache" / "llm-tts" / "piper-tts"
+    _PIPER_CACHE = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "llm-tts" / "piper-tts"
     _PIPER_CACHE.mkdir(parents=True, exist_ok=True)
 
     class PiperTextToSpeechModel(TextToSpeechModel):
@@ -568,6 +568,7 @@ if _has_piper:
             self.voice_path = _PIPER_CACHE / f"{voice_name}.onnx"
             if not self.voice_path.exists():
                 # download_voice will create <voice>.onnx inside the target dir
+                print(f"Downloading {voice_name} to {_PIPER_CACHE}")
                 piper.download_voices.download_voice(voice_name, _PIPER_CACHE)
             self.voice = PiperVoice.load(self.voice_path)
 
