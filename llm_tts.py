@@ -500,7 +500,11 @@ def get_tts_model(name: str) -> TextToSpeechModel:
 register_tts_model('tts-1', partial(OpenAITextToSpeechModel, 'tts-1'))
 register_tts_model('tts-1-hd', partial(OpenAITextToSpeechModel, 'tts-1-hd'))
 register_tts_model('gpt-4o-mini-tts', partial(OpenAITextToSpeechModel, 'gpt-4o-mini-tts'))
+
 register_tts_model('eleven_multilingual_v2', partial(ElevenLabsTextToSpeechModel, 'eleven_multilingual_v2'))
+register_tts_model('eleven_flash_v2_5', partial(ElevenLabsTextToSpeechModel, 'eleven_flash_v2_5'))
+register_tts_model('eleven_turbo_v2_5', partial(ElevenLabsTextToSpeechModel, 'eleven_turbo_v2_5'))
+
 
 _has_transformers = importlib.util.find_spec("transformers") is not None
 
