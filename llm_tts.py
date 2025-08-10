@@ -5,6 +5,7 @@ from functools import cached_property, partial
 import importlib.util
 from io import BytesIO
 import json
+import os
 from pathlib import Path
 from subprocess import Popen, PIPE
 from sys import platform, stdin
@@ -135,6 +136,9 @@ class PlayerSpec(ParamType):
 @option("--list-sinks", is_flag=True,
     help="List available GStreamer audio sinks and exit"
 )
+@option("--list-models", is_flag=True,
+    help="List available TTS models and exit"
+)
 @option('-o', '--output-file', metavar="FILE",
     help="Don't play, write to file"
 )
@@ -149,9 +153,17 @@ def tts_cmd(
     api_key: Optional[str],
     output_file: Optional[str],
     play: Optional[PlayerCfg],
-    list_sinks: bool
+    list_sinks: bool,
+    list_models: bool
 ):
     """Text to speech"""
+
+    # Handle --list-models option
+    if list_models:
+        echo("Available TTS models:")
+        for name in sorted(_models.keys()):
+            echo(f"  {name}")
+        return
 
     # Handle --list-sinks option
     if list_sinks:
