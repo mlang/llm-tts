@@ -142,7 +142,6 @@ class PlayerSpec(ParamType):
 @option('-o', '--output-file', metavar="FILE",
     help="Don't play, write to file"
 )
-@option('--api-key', metavar="SECRET", help='OpenAI API key')
 def tts_cmd(
     text: Optional[str],
     model: Optional[str],
@@ -150,7 +149,6 @@ def tts_cmd(
     instructions: Optional[str],
     fmt: Optional[str],
     json_mode: bool,
-    api_key: Optional[str],
     output_file: Optional[str],
     play: Optional[PlayerCfg],
     list_sinks: bool,
