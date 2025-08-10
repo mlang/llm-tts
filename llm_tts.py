@@ -340,8 +340,8 @@ class StreamingAudio(Protocol):
 class TextToSpeechModel(ABC):
     key_name: ClassVar[Optional[str]] = None
     key_envvar: ClassVar[Optional[str]] = None
-    audio_formats: ClassVar[dict[str, AudioFormat]]
-    preferred_audio_format: ClassVar[str]
+    audio_formats: dict[str, AudioFormat]
+    preferred_audio_format: str
     default_voice: ClassVar[Optional[str]] = None
 
     @classmethod
@@ -502,7 +502,7 @@ if _has_transformers:
         A local TTS model via 🤗 transformers pipeline("text-to-speech").
         Renders to WAV in RAM, then streams in chunks.
         """
-        audio_formats = { "wav": AudioFormat.wav() }
+        audio_formats = { 'wav': AudioFormat.wav() }
         preferred_audio_format = "wav"
 
         def __init__(self, model_name: str):
@@ -525,14 +525,16 @@ if _has_transformers:
             - voice/instructions are ignored here.
             - response_format must be "wav" (our only entry).
             """
-            import wave
-            import numpy as np
             fmt = response_format or self.preferred_audio_format
             if fmt not in self.audio_formats:
                 raise RuntimeError(f"Unsupported format {fmt}")
 
             # run the TTS pipeline → {"array": np.ndarray, "sampling_rate": int}
-            speech = self._pipeline(text)
+            return self.to_wav(self._pipeline(text))
+
+        def to_wav(self, speech) -> ContextManager[StreamingAudio]:
+            import wave
+            import numpy as np
             s16: np.ndarray = (speech["audio"] * 32767).astype(np.int16)
 
             # write to a WAV in RAM
@@ -543,14 +545,17 @@ if _has_transformers:
                 wav.setframerate(speech["sampling_rate"])
                 wav.writeframes(s16.tobytes())
 
-            raw_bytes = buf.getvalue()
+            return _InMemoryAudio(buf.getvalue())
 
-            return _InMemoryAudio(raw_bytes)
-
+    register_tts_model('facebook/mms-tts-deu', partial(TransformersTextToSpeechModel, 'facebook/mms-tts-deu'))
     register_tts_model('facebook/mms-tts-eng', partial(TransformersTextToSpeechModel, 'facebook/mms-tts-eng'))
+    register_tts_model('facebook/mms-tts-heb', partial(TransformersTextToSpeechModel, 'facebook/mms-tts-heb'))
+    register_tts_model('facebook/mms-tts-spa', partial(TransformersTextToSpeechModel, 'facebook/mms-tts-spa'))
+    register_tts_model('facebook/musicgen-small', partial(TransformersTextToSpeechModel, 'facebook/musicgen-small'))
+    register_tts_model('facebook/musicgen-medium', partial(TransformersTextToSpeechModel, 'facebook/musicgen-medium'))
+    register_tts_model('facebook/musicgen-large', partial(TransformersTextToSpeechModel, 'facebook/musicgen-large'))
     register_tts_model('suno/bark', partial(TransformersTextToSpeechModel, 'suno/bark'))
     register_tts_model('suno/bark-small', partial(TransformersTextToSpeechModel, 'suno/bark-small'))
-
 
 # ----------------------------------------------------------------------
 #  Piper / Mimic3 – fully offline TTS via `piper-tts`
@@ -572,8 +577,7 @@ if _has_piper:
         Local synthesis with piper-tts.
         A *model name* corresponds to a specific Piper voice file.
         """
-        audio_formats = { "wav": AudioFormat.wav() }
-        preferred_audio_format = "wav"
+        preferred_audio_format = "pcm"
 
         def __init__(self, voice_name: str):
             # voice_name is like "en_US-amy-low"
@@ -583,6 +587,7 @@ if _has_piper:
                 print(f"Downloading {voice_name} to {_PIPER_CACHE}")
                 piper.download_voices.download_voice(voice_name, _PIPER_CACHE)
             self.voice = PiperVoice.load(self.voice_path)
+            self.audio_formats = {'pcm': AudioFormat.pcm(self.voice.config.sample_rate) }
 
         def synthesize(
             self,
@@ -592,12 +597,37 @@ if _has_piper:
             instructions: Optional[str] = None, # ignored
             response_format: Optional[str] = None
         ) -> ContextManager[StreamingAudio]:
-            import wave
-            buf = BytesIO()
-            with wave.open(buf, "wb") as wav:
-                self.voice.synthesize_wav(text, wav)
+            return StreamPiperAudio(self.voice.synthesize(text))
 
-            return _InMemoryAudio(buf.getvalue())
+    class StreamPiperAudio:
+        def __init__(self, iterator):
+            self.iterator = iterator
+
+        def __enter__(self):
+            return self
+
+        def __exit__(
+            self,
+            exc_type:  Optional[Type[BaseException]],
+            exc_val:   Optional[BaseException],
+            exc_tb:    Optional[TracebackType]
+        ) -> Optional[bool]:
+            return None
+
+        def iter_bytes(self, chunk_size = 1024):
+            buffer = bytearray()
+            for chunk in self.iterator:
+                buffer.extend(chunk.audio_int16_bytes)
+                while len(buffer) >= chunk_size:
+                    yield bytes(buffer[:chunk_size])
+                    buffer = buffer[chunk_size:]
+            if buffer:
+                yield bytes(buffer)
+
+        def stream_to_file(self, filename: str):
+            with open(filename, "wb") as file:
+                for chunk in self.iterator:
+                    file.write(chunk.audio_int16_bytes)
 
     # Register every voice the library knows about
     for voice in (
@@ -771,6 +801,162 @@ class _InMemoryAudio:
         with open(filename, "wb") as f:
             f.write(self._data)
 
+
+has_outetts = importlib.util.find_spec("outetts") is not None
+
+if has_outetts:
+    class OuteTextToSpeechModel(TextToSpeechModel):
+        audio_formats = { 'wav': AudioFormat.wav() }
+        preferred_audio_format = 'wav'
+        default_voice = "EN-FEMALE-1-NEUTRAL"
+
+        def __init__(self, model):
+            self.interface = outetts.Interface(config=outetts.ModelConfig.auto_config(model=model, backend=outetts.Backend.HF))
+
+        def synthesize(
+            self,
+            text: str,
+            *,
+            voice: Optional[str] = None,
+            instructions: Optional[str] = None,
+            response_format: Optional[str] = None
+        ) -> ContextManager[StreamingAudio]:
+            """
+            - voice/instructions are ignored here.
+            - response_format must be "wav" (our only entry).
+            """
+            fmt = response_format or self.preferred_audio_format
+            if fmt not in self.audio_formats:
+                raise RuntimeError(f"Unsupported format {fmt}")
+
+            import outetts # type: ignore
+
+            speaker = self.interface.load_default_speaker(voice or self.default_voice)
+            output = self.interface.generate(
+                config=outetts.GenerationConfig(
+                    text=text, generation_type=outetts.GenerationType.CHUNKED,
+                    speaker=speaker,
+                    sampler_config=outetts.SamplerConfig(temperature=0.4)
+                )
+            )
+
+            audio = output.audio.detach().cpu()
+            if audio.dim() == 3:
+                audio = audio[0]
+            import wave
+            import numpy as np
+            s16: np.ndarray = (audio.numpy() * 32767).astype(np.int16)
+
+            # write to a WAV in RAM
+            buf = BytesIO()
+            with wave.open(buf, 'wb') as wav:
+                wav.setnchannels(s16.shape[0] if s16.ndim == 2 else 1)
+                wav.setsampwidth(2)  # 2 bytes for 16-bit audio
+                wav.setframerate(output.sr)
+                wav.writeframes(s16.tobytes())
+
+            return _InMemoryAudio(buf.getvalue())
+
+    def _load_outetts(attr):
+        import outetts # type: ignore
+        return OuteTextToSpeechModel(getattr(outetts.Models, attr))
+
+    register_tts_model('OuteTTS-1.0-0.6B', partial(_load_outetts, 'VERSION_1_0_SIZE_0_6B'))
+    register_tts_model('Llama-OuteTTS-1.0-1B', partial(_load_outetts, 'VERSION_1_0_SIZE_1B'))
+
+_has_torch = importlib.util.find_spec("torch") is not None
+
+if _has_torch:
+    class SileroTextToSpeechModel(TextToSpeechModel):
+        audio_formats = { 'wav': AudioFormat.wav() }
+        preferred_audio_format = 'wav'
+
+        def __init__(self, language, speaker, sample_rate=48000):
+            self.sample_rate = sample_rate
+            import torch
+            self.model, example = torch.hub.load(
+                repo_or_dir='snakers4/silero-models',
+                model='silero_tts',
+                language=language, speaker=speaker
+            )
+
+        def synthesize(
+            self,
+            text: str,
+            *,
+            voice: Optional[str] = None,
+            instructions: Optional[str] = None,
+            response_format: Optional[str] = None
+        ) -> ContextManager[StreamingAudio]:
+            """
+            - voice/instructions are ignored here.
+            - response_format must be "wav" (our only entry).
+            """
+            fmt = response_format or self.preferred_audio_format
+            if fmt not in self.audio_formats:
+                raise RuntimeError(f"Unsupported format {fmt}")
+
+            audio = self.model.apply_tts(text=text, speaker=voice or self.model.speakers[0])
+
+            audio = audio.detach().cpu()
+            if audio.dim() == 3:
+                audio = audio[0]
+            import wave
+            import numpy as np
+            s16: np.ndarray = (audio.numpy() * 32767).astype(np.int16)
+
+            # write to a WAV in RAM
+            buf = BytesIO()
+            with wave.open(buf, 'wb') as wav:
+                wav.setnchannels(s16.shape[0] if s16.ndim == 2 else 1)
+                wav.setsampwidth(2)  # 2 bytes for 16-bit audio
+                wav.setframerate(self.sample_rate)
+                wav.writeframes(s16.tobytes())
+
+            return _InMemoryAudio(buf.getvalue())
+
+    def _load_silero(language, speaker, sample_rate):
+        import torch
+        return SileroTextToSpeechModel(language, speaker, sample_rate)
+
+    # Russian
+    register_tts_model('silero/v4_ru',        partial(_load_silero, 'ru', 'v4_ru',        48000))
+    register_tts_model('silero/v3_1_ru',      partial(_load_silero, 'ru', 'v3_1_ru',      48000))
+    register_tts_model('silero/ru_v3',        partial(_load_silero, 'ru', 'ru_v3',        48000))
+
+    # English
+    register_tts_model('silero/v3_en',        partial(_load_silero, 'en', 'v3_en',        48000))
+    register_tts_model('silero/v3_en_indic',  partial(_load_silero, 'en', 'v3_en_indic',  48000))
+
+    # German
+    register_tts_model('silero/v3_de',        partial(_load_silero, 'de', 'v3_de',        48000))
+
+    # Spanish
+    register_tts_model('silero/v3_es',        partial(_load_silero, 'es', 'v3_es',        48000))
+
+    # French
+    register_tts_model('silero/v3_fr',        partial(_load_silero, 'fr', 'v3_fr',        48000))
+
+    # Kalmyk
+    register_tts_model('silero/v3_xal',       partial(_load_silero, 'xal', 'v3_xal',       48000))
+
+    # Tatar
+    register_tts_model('silero/v3_tt',        partial(_load_silero, 'tt', 'v3_tt',        48000))
+
+    # Uzbek
+    register_tts_model('silero/v4_uz',        partial(_load_silero, 'uz', 'v4_uz',        48000))
+    register_tts_model('silero/v3_uz',        partial(_load_silero, 'uz', 'v3_uz',        48000))
+
+    # Ukrainian
+    register_tts_model('silero/v4_ua',        partial(_load_silero, 'ua', 'v4_ua',        48000))
+    register_tts_model('silero/v3_ua',        partial(_load_silero, 'ua', 'v3_ua',        48000))
+
+    # Indic (generic cyrillic)
+    register_tts_model('silero/v4_indic',     partial(_load_silero, 'indic', 'v4_indic',   48000))
+    register_tts_model('silero/v3_indic',     partial(_load_silero, 'indic', 'v3_indic',   48000))
+
+    # Cyrillic‐only
+    register_tts_model('silero/v4_cyrillic',  partial(_load_silero, 'cyrillic','v4_cyrillic',48000))
 
 CHUNK_SIZE = 4096
 DEFAULT_TTS_MODEL = 'gpt-4o-mini-tts'

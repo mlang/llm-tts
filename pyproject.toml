@@ -1,7 +1,7 @@
 [project]
 name = "llm-tts"
 version = "0.1"
-description = "A LLM plugin for OpenAI TTS"
+description = "A LLM plugin for TTS"
 readme = "README.md"
 license = "Apache-2.0"
 dependencies = [ "llm", "openai", "elevenlabs", "piper-tts" ]
