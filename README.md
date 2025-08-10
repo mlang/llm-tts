@@ -38,7 +38,7 @@ llm tts --play gstreamer:alsasink "Advanced Linux Sound Architecture"
 If you want the chat model to be able to pass instructions along to the tts model, you can do so with a schema specification and the `--json` flag:
 
 ```bash
-llm --schema "input: Text to speak, instructions: How to speak the given text" --save tts
+llm --schema "text: Text to speak, instructions: How to speak the given text" --save tts
 llm -t tts "A lovely poem" | llm tts --json
 
 
