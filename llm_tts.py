@@ -145,7 +145,7 @@ class PlayerSpec(ParamType):
 @option('--api-key', metavar="SECRET", help='OpenAI API key')
 def tts_cmd(
     text: Optional[str],
-    model: str,
+    model: Optional[str],
     voice: Optional[str],
     instructions: Optional[str],
     fmt: Optional[str],
@@ -160,7 +160,8 @@ def tts_cmd(
 
     # Handle --list-models option
     if list_models:
-        for name in sorted(_models.keys()):
+        model_names = set(_model_factories) | set(_model_instances)
+        for name in sorted(model_names):
             echo(name)
         return
 
@@ -179,7 +180,8 @@ def tts_cmd(
 
     backend = cast(PlayerCfg, play)
 
-    tts_model = get_tts_model(model)
+    # ensure a concrete model name is passed
+    tts_model = get_tts_model(model or DEFAULT_TTS_MODEL)
 
     if fmt is None:
         fmt = tts_model.preferred_audio_format
@@ -193,11 +195,6 @@ def tts_cmd(
 
     if text:
         tts_request['text'] = text
-    if 'model' in tts_request:
-        model = tts_request['model']
-        del tts_request['model']
-    if model is None:
-        model = DEFAULT_TTS_MODEL
     if voice or 'voice' not in tts_request:
         tts_request['voice'] = voice or tts_model.default_voice
     if instructions:
@@ -474,18 +471,32 @@ class ElevenLabsAudioStream:
                 file.write(chunk)
 
 
-_models: dict[str, TextToSpeechModel | Callable[[], TextToSpeechModel]] = {}
+_model_factories: dict[str, Callable[[], TextToSpeechModel]] = {}
+_model_instances: dict[str, TextToSpeechModel] = {}
 
-def register_tts_model(name: str, factory: TextToSpeechModel | Callable[[], TextToSpeechModel]):
-    _models[name] = factory
+def register_tts_model(name: str, obj: TextToSpeechModel | Callable[[], TextToSpeechModel]):
+    """
+    Register either a lazily-constructed factory or a pre-built instance.
+    """
+    if callable(obj):
+        _model_factories[name] = obj
+    else:
+        _model_instances[name] = obj
 
 def get_tts_model(name: str) -> TextToSpeechModel:
-    if name not in _models:
-        raise RuntimeError(f"No TTS Model named {name}")
-    model_or_factory = _models[name]
-    if callable(model_or_factory):
-        model_or_factory = _models[name] = model_or_factory()
-    return model_or_factory
+    """
+    Return a singleton instance for the given TTS model name.
+    Instantiates the model on first request using the registered factory.
+    """
+    if name in _model_instances:
+        return _model_instances[name]
+
+    if name in _model_factories:
+        instance = _model_factories[name]()
+        _model_instances[name] = instance
+        return instance
+
+    raise RuntimeError(f"No TTS Model named {name}")
 
 
 register_tts_model('tts-1', partial(OpenAITextToSpeechModel, 'tts-1'))
