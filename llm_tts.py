@@ -160,9 +160,8 @@ def tts_cmd(
 
     # Handle --list-models option
     if list_models:
-        echo("Available TTS models:")
         for name in sorted(_models.keys()):
-            echo(f"  {name}")
+            echo(name)
         return
 
     # Handle --list-sinks option
@@ -811,6 +810,7 @@ if has_outetts:
         default_voice = "EN-FEMALE-1-NEUTRAL"
 
         def __init__(self, model):
+            import outetts # type: ignore
             self.interface = outetts.Interface(config=outetts.ModelConfig.auto_config(model=model, backend=outetts.Backend.HF))
 
         def synthesize(
