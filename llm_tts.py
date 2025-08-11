@@ -599,7 +599,9 @@ if _has_piper:
                 print(f"Downloading {voice_name} to {_PIPER_CACHE}")
                 piper.download_voices.download_voice(voice_name, _PIPER_CACHE)
             self.voice = PiperVoice.load(self.voice_path)
-            self.audio_formats = {'pcm': AudioFormat.pcm(self.voice.config.sample_rate) }
+            self.audio_formats = {
+                'pcm': AudioFormat.pcm(self.voice.config.sample_rate)
+            }
 
         def synthesize(
             self,
@@ -928,48 +930,44 @@ if _has_torch:
 
             return _InMemoryAudio(buf.getvalue())
 
-    def _load_silero(language, speaker, sample_rate):
-        import torch
-        return SileroTextToSpeechModel(language, speaker, sample_rate)
-
     # Russian
-    register_tts_model('silero/v4_ru',        partial(_load_silero, 'ru', 'v4_ru',        48000))
-    register_tts_model('silero/v3_1_ru',      partial(_load_silero, 'ru', 'v3_1_ru',      48000))
-    register_tts_model('silero/ru_v3',        partial(_load_silero, 'ru', 'ru_v3',        48000))
+    register_tts_model('silero/v4_ru',        partial(SileroTextToSpeechModel, 'ru', 'v4_ru',        48000))
+    register_tts_model('silero/v3_1_ru',      partial(SileroTextToSpeechModel, 'ru', 'v3_1_ru',      48000))
+    register_tts_model('silero/ru_v3',        partial(SileroTextToSpeechModel, 'ru', 'ru_v3',        48000))
 
     # English
-    register_tts_model('silero/v3_en',        partial(_load_silero, 'en', 'v3_en',        48000))
-    register_tts_model('silero/v3_en_indic',  partial(_load_silero, 'en', 'v3_en_indic',  48000))
+    register_tts_model('silero/v3_en',        partial(SileroTextToSpeechModel, 'en', 'v3_en',        48000))
+    register_tts_model('silero/v3_en_indic',  partial(SileroTextToSpeechModel, 'en', 'v3_en_indic',  48000))
 
     # German
-    register_tts_model('silero/v3_de',        partial(_load_silero, 'de', 'v3_de',        48000))
+    register_tts_model('silero/v3_de',        partial(SileroTextToSpeechModel, 'de', 'v3_de',        48000))
 
     # Spanish
-    register_tts_model('silero/v3_es',        partial(_load_silero, 'es', 'v3_es',        48000))
+    register_tts_model('silero/v3_es',        partial(SileroTextToSpeechModel, 'es', 'v3_es',        48000))
 
     # French
-    register_tts_model('silero/v3_fr',        partial(_load_silero, 'fr', 'v3_fr',        48000))
+    register_tts_model('silero/v3_fr',        partial(SileroTextToSpeechModel, 'fr', 'v3_fr',        48000))
 
     # Kalmyk
-    register_tts_model('silero/v3_xal',       partial(_load_silero, 'xal', 'v3_xal',       48000))
+    register_tts_model('silero/v3_xal',       partial(SileroTextToSpeechModel, 'xal', 'v3_xal',       48000))
 
     # Tatar
-    register_tts_model('silero/v3_tt',        partial(_load_silero, 'tt', 'v3_tt',        48000))
+    register_tts_model('silero/v3_tt',        partial(SileroTextToSpeechModel, 'tt', 'v3_tt',        48000))
 
     # Uzbek
-    register_tts_model('silero/v4_uz',        partial(_load_silero, 'uz', 'v4_uz',        48000))
-    register_tts_model('silero/v3_uz',        partial(_load_silero, 'uz', 'v3_uz',        48000))
+    register_tts_model('silero/v4_uz',        partial(SileroTextToSpeechModel, 'uz', 'v4_uz',        48000))
+    register_tts_model('silero/v3_uz',        partial(SileroTextToSpeechModel, 'uz', 'v3_uz',        48000))
 
     # Ukrainian
-    register_tts_model('silero/v4_ua',        partial(_load_silero, 'ua', 'v4_ua',        48000))
-    register_tts_model('silero/v3_ua',        partial(_load_silero, 'ua', 'v3_ua',        48000))
+    register_tts_model('silero/v4_ua',        partial(SileroTextToSpeechModel, 'ua', 'v4_ua',        48000))
+    register_tts_model('silero/v3_ua',        partial(SileroTextToSpeechModel, 'ua', 'v3_ua',        48000))
 
     # Indic (generic cyrillic)
-    register_tts_model('silero/v4_indic',     partial(_load_silero, 'indic', 'v4_indic',   48000))
-    register_tts_model('silero/v3_indic',     partial(_load_silero, 'indic', 'v3_indic',   48000))
+    register_tts_model('silero/v4_indic',     partial(SileroTextToSpeechModel, 'indic', 'v4_indic',   48000))
+    register_tts_model('silero/v3_indic',     partial(SileroTextToSpeechModel, 'indic', 'v3_indic',   48000))
 
     # Cyrillic‐only
-    register_tts_model('silero/v4_cyrillic',  partial(_load_silero, 'cyrillic','v4_cyrillic',48000))
+    register_tts_model('silero/v4_cyrillic',  partial(SileroTextToSpeechModel, 'cyrillic','v4_cyrillic',48000))
 
 CHUNK_SIZE = 4096
 DEFAULT_TTS_MODEL = 'gpt-4o-mini-tts'
